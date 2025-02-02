@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Interactive Distribution Visualizer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/6.7.0/d3.min.js"></script>
+  <style>
+    .container { display: flex; }
+    body { font-family: sans-serif; }
+    .controls { margin-bottom: 10px; }
+    #errorLog { color: red; font-family: monospace; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Interactive Distribution Visualizer</h1>
+  <div class="controls">
+    <label for="maxData">Max Data Points:</label>
+    <input type="number" id="maxData" value="500" min="1">
+    &nbsp;&nbsp;
+    <label for="speedSlider">Animation Speed (ms):</label>
+    <input type="range" id="speedSlider" min="100" max="2000" value="100" step="100">
+    <span id="speedValue">100</span> ms
+    &nbsp;&nbsp;
+    <label for="distSelect">Distribution:</label>
+    <select id="distSelect">
+      <option value="normal">Normal (μ=165, σ=20)</option>
+      <option value="uniform">Uniform (140, 190)</option>
+      <option value="exponential">Exponential (λ=1/50, shift 100)</option>
+      <option value="halfnormal">Halfnormal (shifted so median≈165)</option>
+    </select>
+    &nbsp;&nbsp;
+    <label><input type="checkbox" id="outlierCheckbox"> Include Outliers</label>
+    &nbsp;&nbsp;
+    <button id="resetButton">Reset</button>
+    &nbsp;&nbsp;
+    <button id="toggleButton">Play</button>
+  </div>
+  <div class="container">
+    <svg id="svg-boxplot" width="600" height="300"></svg>
+    <svg id="svg-hist" width="800" height="300"></svg>
+  </div>
+  <div id="data-list" style="font-family: monospace; margin-top:10px;"></div>
+  <div id="stats" style="font-family: monospace; margin-top:10px;"></div>
+  <div id="errorLog"></div>
+  <script>
+    // Global error handler: any uncaught errors will be shown in the errorLog div.
+    window.onerror = function(message, source, lineno, colno, error) {
+      const errorLog = document.getElementById("errorLog");
+      errorLog.innerHTML += `<p>Error: ${message} at ${source}:${lineno}:${colno}</p>`;
+      return false;
+    };
+
+    const svgBox = d3.select("#svg-boxplot"),
+          widthBox = +svgBox.attr("width"),
+          heightBox = +svgBox.attr("height"),
+          marginBox = { left: 40, right: 40, top: 20, bottom: 50 },
+          boxHeight = 30;
+    const svgHist = d3.select("#svg-hist"),
+          widthHist = +svgHist.attr("width"),
+          heightHist = +svgHist.attr("height"),
+          marginHist = { left: 40, right: 20, top: 20, bottom: 30 };
+    let data = [], timer = null;
+    const maxDataInput = document.getElementById("maxData"),
+          speedSlider = document.getElementById("speedSlider"),
+          speedValue = document.getElementById("speedValue"),
+          distSelect = document.getElementById("distSelect"),
+          outlierCheckbox = document.getElementById("outlierCheckbox"),
+          resetButton = document.getElementById("resetButton"),
+          toggleButton = document.getElementById("toggleButton");
+
+    function getRandomValue() {
+      // If "Include Outliers" is checked, 10% chance to generate an outlier.
+      if (outlierCheckbox.checked && Math.random() < 0.1) {
+        return Math.round(Math.random() < 0.5 ? d3.randomUniform(0, 100)() : d3.randomUniform(300, 400)());
+      }
+      const dist = distSelect.value;
+      let val;
+      if (dist === "normal") {
+        val = Math.round(d3.randomNormal(165, 20)());
+      } else if (dist === "uniform") {
+        val = Math.round(d3.randomUniform(140, 190)());
+      } else if (dist === "exponential") {
+        val = Math.round(d3.randomExponential(1/50)() + 100);
+      } else if (dist === "halfnormal") {
+        // For halfnormal: take the absolute value of a N(0,20) sample and shift by 151.5.
+        val = Math.round(Math.abs(d3.randomNormal(0,20)()) + 151.5);
+      } else {
+        val = Math.round(d3.randomNormal(165, 20)());
+      }
+      return val;
+    }
+
+    function update() {
+      const maxData = +maxDataInput.value;
+      if (data.length >= maxData) {
+        clearInterval(timer);
+        timer = null;
+        toggleButton.textContent = "Play";
+        return;
+      }
+      data.push(getRandomValue());
+      data.sort(d3.ascending);
+      const minVal = d3.min(data),
+            maxVal = d3.max(data),
+            q1 = data.length > 1 ? d3.quantile(data, 0.25) : data[0],
+            median = data.length > 1 ? d3.quantile(data, 0.5) : data[0],
+            q3 = data.length > 1 ? d3.quantile(data, 0.75) : data[0],
+            iqr = q3 - q1,
+            whiskerMin = data.length > 1 ? Math.max(minVal, q1 - 1.5 * iqr) : minVal,
+            whiskerMax = data.length > 1 ? Math.min(maxVal, q3 + 1.5 * iqr) : maxVal,
+            avg = d3.mean(data);
+      // Boxplot
+      const xScaleBox = d3.scaleLinear()
+            .domain([minVal - 1, maxVal + 1])
+            .range([marginBox.left, widthBox - marginBox.right]);
+      svgBox.selectAll("*").remove();
+      svgBox.append("line")
+         .attr("x1", xScaleBox(whiskerMin))
+         .attr("x2", xScaleBox(whiskerMax))
+         .attr("y1", heightBox/2)
+         .attr("y2", heightBox/2)
+         .attr("stroke", "black");
+      svgBox.append("rect")
+         .attr("x", xScaleBox(q1))
+         .attr("y", heightBox/2 - boxHeight/2)
+         .attr("width", xScaleBox(q3) - xScaleBox(q1))
+         .attr("height", boxHeight)
+         .attr("fill", "#ccc")
+         .attr("stroke", "black");
+      svgBox.append("line")
+         .attr("x1", xScaleBox(median))
+         .attr("x2", xScaleBox(median))
+         .attr("y1", heightBox/2 - boxHeight/2)
+         .attr("y2", heightBox/2 + boxHeight/2)
+         .attr("stroke", "black");
+      svgBox.append("line")
+         .attr("x1", xScaleBox(whiskerMin))
+         .attr("x2", xScaleBox(whiskerMin))
+         .attr("y1", heightBox/2 - boxHeight/4)
+         .attr("y2", heightBox/2 + boxHeight/4)
+         .attr("stroke", "black");
+      svgBox.append("line")
+         .attr("x1", xScaleBox(whiskerMax))
+         .attr("x2", xScaleBox(whiskerMax))
+         .attr("y1", heightBox/2 - boxHeight/4)
+         .attr("y2", heightBox/2 + boxHeight/4)
+         .attr("stroke", "black");
+      svgBox.append("g")
+         .attr("transform", `translate(0, ${heightBox - marginBox.bottom + 20})`)
+         .call(d3.axisBottom(xScaleBox).ticks(10).tickFormat(d3.format("d")));
+
+      // Histogram
+      const xDomainHist = [Math.floor(minVal) - 1, Math.ceil(maxVal) + 1],
+            xScaleHist = d3.scaleLinear()
+              .domain(xDomainHist)
+              .range([marginHist.left, widthHist - marginHist.right]);
+      svgHist.selectAll("*").remove();
+      svgHist.append("g")
+         .attr("transform", `translate(0, ${heightHist - marginHist.bottom})`)
+         .call(d3.axisBottom(xScaleHist).ticks(10).tickFormat(d3.format("d")));
+      const groups = d3.group(data, d => d),
+            circleRadius = 5,
+            circleSpacing = 2;
+      groups.forEach((values, key) => {
+         values.forEach((d, i) => {
+           svgHist.append("circle")
+             .attr("cx", xScaleHist(key))
+             .attr("cy", heightHist - marginHist.bottom - circleRadius - i * (2 * circleRadius + circleSpacing))
+             .attr("r", circleRadius)
+             .attr("fill", "steelblue");
+         });
+      });
+      [q1, median, q3].forEach(val => {
+         svgHist.append("line")
+           .attr("x1", xScaleHist(val))
+           .attr("x2", xScaleHist(val))
+           .attr("y1", marginHist.top)
+           .attr("y2", heightHist - marginHist.bottom)
+           .attr("stroke", "green")
+           .attr("stroke-dasharray", "4,4")
+           .attr("stroke-width", "2");
+      });
+      svgHist.append("line")
+         .attr("x1", xScaleHist(avg))
+         .attr("x2", xScaleHist(avg))
+         .attr("y1", marginHist.top)
+         .attr("y2", heightHist - marginHist.bottom)
+         .attr("stroke", "red")
+         .attr("stroke-dasharray", "4,4")
+         .attr("stroke-width", "2");
+      d3.select("#data-list").html("Data: " + data.join(", "));
+      d3.select("#stats").html(
+        `Min: ${minVal}, Q1: ${Math.round(q1)}, Median: ${Math.round(median)}, Q3: ${Math.round(q3)}, Max: ${maxVal}, Avg: ${Math.round(avg)}`
+      );
+    }
+
+    function startTimer() {
+      const speed = +speedSlider.value;
+      speedValue.textContent = speed;
+      clearInterval(timer);
+      timer = setInterval(update, speed);
+      toggleButton.textContent = "Stop";
+    }
+
+    function stopTimer() {
+      clearInterval(timer);
+      timer = null;
+      toggleButton.textContent = "Play";
+    }
+
+    speedSlider.addEventListener("input", () => { if (timer) startTimer(); });
+    toggleButton.addEventListener("click", () => { timer ? stopTimer() : startTimer(); });
+    resetButton.addEventListener("click", () => {
+      stopTimer();
+      data = [];
+      svgBox.selectAll("*").remove();
+      svgHist.selectAll("*").remove();
+      d3.select("#data-list").html("");
+      d3.select("#stats").html("");
+    });
+  </script>
+</body>
+</html>
